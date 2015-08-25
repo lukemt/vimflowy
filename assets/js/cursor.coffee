@@ -3,10 +3,15 @@ if module?
   constants = require('./constants.coffee')
 
 class Cursor
-  constructor: (data, row = null, col = null, moveCol = null) ->
+  constructor: (data, path = null, col = null, moveCol = null) ->
     @data = data
-    @row = row ? (@data.getChildren @data.viewRoot)[0]
+
+    # a path [root, ...., parent, row]
+    @path = path.slice() ? [0, 1]
+    # easy access to last element of path
+    @row = path[path.length-1]
     @col = col ? 0
+
     @properties = {}
     do @_getPropertiesFromContext
 
@@ -14,10 +19,11 @@ class Cursor
     @moveCol = moveCol ? col
 
   clone: () ->
-    return new Cursor @data, @row, @col, @moveCol
+    return new Cursor @data, @path, @col, @moveCol
 
   from: (other) ->
     @row = other.row
+    @path = other.path.slice()
     @col = other.col
     @moveCol = other.moveCol
 
@@ -31,10 +37,18 @@ class Cursor
 
   set: (row, col, cursorOptions) ->
     @row = row
+    @path = @data.getCanonicalPath row
     @setCol col, cursorOptions
+
+  setPath: (path, cursorOptions) ->
+    @path = path
+    do @assert_path
+    @row = @path[@path.length - 1]
+    @_fromMoveCol cursorOptions
 
   setRow: (row, cursorOptions) ->
     @row = row
+    @path = @data.getCanonicalPath row
     @_fromMoveCol cursorOptions
 
   setCol: (moveCol, cursorOptions = {pastEnd: true}) ->
@@ -55,6 +69,24 @@ class Cursor
     if not cursorOptions.keepProperties
       do @_getPropertiesFromContext
 
+  push_path: (new_row) ->
+    @path.push new_row
+    @row = new_row
+
+  pop_path: () ->
+    old_row = do @path.pop
+    do @assert_path
+    @row = @path[@path.length - 1]
+    return old_row
+
+  assert_path: () ->
+    if @path.length < 2
+      throw "Unexpectedly short path: #{@path}"
+
+  parentRow: () ->
+    do @assert_path
+    return @path[@path.length - 2]
+
   _left: () ->
     @setCol (@col - 1)
 
@@ -70,6 +102,52 @@ class Cursor
     if @col < (@data.getLength @row) - shift
       do @_right
 
+  nextVisible: () ->
+    path = do @path.slice
+    if not @data.collapsed @row
+      children = @data.getChildren @row
+      if children.length > 0
+        path.push children[0]
+        return path
+    while true
+      id = do path.pop
+      nextsib = @data.getSiblingAfter path[path.length-1], id
+      if nextsib != null
+        path.push nextsib
+        return path
+    return null
+
+  prevVisible: () ->
+    path = do @path.slice
+    id = do path.pop
+    parent = path[path.length - 1]
+    prevsib = @data.getSiblingBefore parent, id
+    if prevsib != null
+      cur = prevsib
+      while true
+        path.push cur
+        if @data.collapsed cur
+          break
+        children = @data.getChildren cur
+        if children.length == 0
+          break
+        cur = children[children.length - 1]
+      return path
+    if parent == @data.viewRoot
+      return null
+    return path
+
+  up: (cursorOptions = {}) ->
+    path = do @prevVisible
+    if path != null
+      @setPath path
+
+
+  down: (cursorOptions = {}) ->
+    path = do @nextVisible
+    if path != null
+      @setPath path
+
   backIfNeeded: () ->
     if @col > (@data.getLength @row) - 1
       do @left
@@ -78,8 +156,8 @@ class Cursor
     if @col < (@data.getLength @row) - 1
       return false
     else
-      nextrow = @data.nextVisible @row
-      if nextrow != null
+
+      if (do @nextVisible) != null
         return false
     return true
 
@@ -88,9 +166,10 @@ class Cursor
       do @_right
       return true
     else
-      nextrow = @data.nextVisible @row
-      if nextrow != null
-        @set nextrow, 0
+      path = do @nextVisible
+      if path != null
+        @setPath path
+        @setCol 0
         return true
     return false
 
@@ -98,8 +177,8 @@ class Cursor
     if @col > 0
       return false
     else
-      prevrow = @data.prevVisible @row
-      if prevrow != null
+      path = do @prevVisible
+      if path != null
         return false
     return true
 
@@ -108,9 +187,10 @@ class Cursor
       do @_left
       return true
     else
-      prevrow = @data.prevVisible @row
-      if prevrow != null
-        @set prevrow, -1
+      path = do @prevVisible
+      if path != null
+        @setPath path
+        @setCol -1
         return true
     return false
 
@@ -123,7 +203,10 @@ class Cursor
     return @
 
   visibleHome: () ->
-    row = do @data.nextVisible
+    children = @data.getChildren @data.viewroot
+    if children.length < 1
+      throw "Nothing visible!"
+    row = children[0]
     @set row, 0
     return @
 
@@ -258,16 +341,6 @@ class Cursor
     @setCol found
     if options.beforeFound
       do @_right
-
-  up: (cursorOptions = {}) ->
-    row = @data.prevVisible @row
-    if row != null
-      @setRow row, cursorOptions
-
-  down: (cursorOptions = {}) ->
-    row = @data.nextVisible @row
-    if row != null
-      @setRow row, cursorOptions
 
   parent: (cursorOptions = {}) ->
     row = @data.getParent @row

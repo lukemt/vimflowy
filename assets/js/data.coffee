@@ -118,7 +118,8 @@ class Data
       @store.setMarks cur, marks
       if cur == to
         break
-      cur = @getParent cur
+      # TODO: do this properly, canonical parent not right thing
+      cur = @getCanonicalParent cur
 
   setMark: (id, mark = '') ->
     if @_updateAllMarks id, mark
@@ -134,7 +135,8 @@ class Data
       row = parseInt row
       @_updateAllMarks row, ''
       # roll back the mark for this row, but only above me
-      @_updateMarksRecursive row, '', (@getParent id), @root
+      # TODO: do this properly, canonical parent not right thing
+      @_updateMarksRecursive row, '', (@getCanonicalParent id), @root
 
   # try to restore the marks of an id that was detached
   # assumes that the new to-be-parent of the id is already set
@@ -154,18 +156,25 @@ class Data
   # structure #
   #############
 
-  getParent: (row) ->
-    return @store.getParent row
+  getParents: (row) ->
+    return @store.getParents row
+
+  getCanonicalParent: (row) ->
+    return (@getParents row)[0]
+
+  getCanonicalPath: (row) ->
+    path = [row]
+    while row != @root
+      row = @getCanonicalParent row
+      path.push row
+    path.reverse()
+    return path
 
   getChildren: (row) ->
     return @store.getChildren row
 
   hasChildren: (row) ->
     return ((@getChildren row).length > 0)
-
-  getSiblings: (row) ->
-    parent = @getParent row
-    return @getChildren parent
 
   collapsed: (row) ->
     return @store.getCollapsed row
@@ -177,27 +186,25 @@ class Data
   viewable: (row) ->
     return (not @collapsed row) or (row == @viewRoot)
 
-  indexOf: (child) ->
-    children = @getSiblings child
+  indexOf: (child, parent) ->
+    children = @getChildren parent
     return children.indexOf child
 
-  detach: (id) ->
-    # detach a block from the graph
+  detachChild: (parent, id) ->
+    # detach a block from the specified parent
     # though it is detached, it remembers its old parent
     # and remembers its old mark
 
-    parent = @getParent id
     children = @getChildren parent
     i = children.indexOf id
+    if i == -1
+      throw "Row #{id} was not a child of #{parent}"
     children.splice i, 1
 
     @store.setChildren parent, children
     @detachMarks id
 
-    return {
-      parent: parent
-      index: i
-    }
+    return i
 
   # attaches a detached child to a parent
   # the child should not have a parent already
@@ -211,40 +218,14 @@ class Data
     else
       children.splice.apply children, [index, 0].concat(new_children)
     for child in new_children
-      @store.setParent child, id
+      parents = @getParents child
+      parents.push id
+      @store.setParents child, parents
       @attachMarks child
 
     @store.setChildren id, children
 
-  # returns an array representing the ancestry of a row,
-  # up until the ancestor specified by the `stop` parameter
-  # i.e. [stop, stop's child, ... , row's parent , row]
-  getAncestry: (row, stop = @root) ->
-    ancestors = []
-    while row != stop
-      if row == @root
-        throw "Failed to get ancestry for #{row} going up until #{stop}"
-      ancestors.push row
-      row = @getParent row
-    ancestors.push stop
-    do ancestors.reverse
-    return ancestors
-
-  # given two rows, returns
-  # 1. the common ancestor of the rows
-  # 2. the array of ancestors between common ancestor and row1
-  # 3. the array of ancestors between common ancestor and row2
-  getCommonAncestor: (row1, row2) ->
-    ancestors1 = @getAncestry row1
-    ancestors2 = @getAncestry row2
-    common = @root
-    i = 1
-    while ancestors1.length > i and ancestors2.length > i and ancestors1[i] == ancestors2[i]
-      common = ancestors1[i]
-      i += 1
-    return [common, ancestors1[i..], ancestors2[i..]]
-
-  nextVisible: (id = @viewRoot) ->
+  firstVisible: (id = @viewRoot) ->
     if @viewable id
       children = @getChildren id
       if children.length > 0
@@ -311,19 +292,18 @@ class Data
         return false
       id = @getParent id
 
-  getSiblingBefore: (id) ->
-    return @getSiblingOffset id, -1
+  getSiblingBefore: (parent, id) ->
+    return @getSiblingOffset parent, id, -1
 
-  getSiblingAfter: (id) ->
-    return @getSiblingOffset id, 1
+  getSiblingAfter: (parent, id) ->
+    return @getSiblingOffset parent, id, 1
 
-  getSiblingOffset: (id, offset) ->
-    return (@getSiblingRange id, offset, offset)[0]
+  getSiblingOffset: (parent, id, offset) ->
+    return (@getSiblingRange parent, id, offset, offset)[0]
 
-  getSiblingRange: (id, min_offset, max_offset) ->
-    children = @getSiblings id
-    index = @indexOf id
-    return @getChildRange (@getParent id), (min_offset + index), (max_offset + index)
+  getSiblingRange: (parent, id, min_offset, max_offset) ->
+    index = @indexOf id, parent
+    return @getChildRange parent, (min_offset + index), (max_offset + index)
 
   getChildRange: (id, min, max) ->
     children = @getChildren id
@@ -476,7 +456,7 @@ class Data
       @attachChild parent, id, index
     else
       # parent should be 0
-      @store.setParent id, @root
+      @store.setParents id, [@root]
 
     if typeof serialized == 'string'
       @setLine id, (serialized.split '')

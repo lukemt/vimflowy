@@ -203,8 +203,7 @@ renderLine = (lineData, options = {}) ->
       @modeDiv = options.modeDiv
 
 
-      row = (@data.getChildren @data.viewRoot)[0]
-      @cursor = new Cursor @data, row, 0
+      @cursor = new Cursor @data, [0, 1], 0
       @register = new Register @
 
       @actions = [] # full action history
@@ -768,7 +767,10 @@ renderLine = (lineData, options = {}) ->
       # restore cursor
       @cursor.set row, 0, {keepProperties: true}
 
-    joinRows: (first, second, options = {}) ->
+    # given two cursor paths, joins the two rows
+    joinRows: (firstpath, secondpath, options = {}) ->
+      first = firstpath[firstpath.length - 1]
+      second = secondpath[secondpath.length - 1]
       for child in @data.getChildren second by -1
         # NOTE: if first is collapsed, should we uncollapse?
         @moveBlock child, first, 0
@@ -777,27 +779,26 @@ renderLine = (lineData, options = {}) ->
       if line.length and options.delimiter
         if line[0].char != options.delimiter
           line = [{char: options.delimiter}].concat line
-      @detachBlock second
+      @detachBlock secondpath[secondpath.length - 2], second
 
       newCol = @data.getLength first
       action = new actions.AddChars first, newCol, line
       @act action
 
-      @cursor.set first, newCol, options.cursor
+      @cursor.setPath firstpath
+      @cursor.setCol newCol, options.cursor
 
     joinAtCursor: () ->
-      row = @cursor.row
-      sib = @data.nextVisible row
-      if sib != null
-        @joinRows row, sib, {cursor: {pastEnd: true}, delimiter: ' '}
+      nextpath = do @cursor.nextVisible
+      if nextpath != null
+        @joinRows @cursor.path, nextpath, {cursor: {pastEnd: true}, delimiter: ' '}
 
     # implements proper "backspace" behavior
     deleteAtCursor: () ->
       if @cursor.col == 0
-        row = @cursor.row
-        sib = @data.prevVisible row
-        if sib != null
-          @joinRows sib, row, {cursor: {pastEnd: true}}
+        prevpath = do @cursor.prevVisible
+        if prevpath != null
+          @joinRows prevpath, @cursor.path, {cursor: {pastEnd: true}}
       else
         @delCharsBeforeCursor 1, {cursor: {pastEnd: true}}
 
@@ -818,8 +819,8 @@ renderLine = (lineData, options = {}) ->
       serialized = siblings.map ((x) => return @data.serialize x)
       @register.saveSerializedRows serialized
 
-    detachBlock: (row, options = {}) ->
-      action = new actions.DetachBlock row, options
+    detachBlock: (parent, row, options = {}) ->
+      action = new actions.DetachBlock parent, row, options
       @act action
       return action
 
@@ -832,7 +833,7 @@ renderLine = (lineData, options = {}) ->
       @act new actions.AttachBlock row, parent, index, options
 
     moveBlock: (row, parent, index = -1, options = {}) ->
-      @detachBlock row, options
+      @detachBlock parent, row, options
       @attachBlock row, parent, index, options
 
     indentBlocks: (id, numblocks = 1) ->
@@ -893,12 +894,14 @@ renderLine = (lineData, options = {}) ->
       for child in p_children.slice(p_i)
         @moveBlock child, id, -1
 
-    swapDown: (row = @cursor.row) ->
+    swapDown: () ->
+      row = @cursor.row
+      parent = do @cursor.parentRow
       next = @data.nextVisible (@data.lastVisible row)
       if next == null
         return
 
-      @detachBlock row
+      @detachBlock parent, row
       if (@data.hasChildren next) and (not @data.collapsed next)
         # make it the first child
         @attachBlock row, next, 0
@@ -908,12 +911,15 @@ renderLine = (lineData, options = {}) ->
         p_i = @data.indexOf next
         @attachBlock row, parent, (p_i+1)
 
-    swapUp: (row = @cursor.row) ->
+    swapUp: () ->
+      row = @cursor.row
+      parent = do @cursor.parentRow
+
       prev = @data.prevVisible row
       if prev == null
         return
 
-      @detachBlock row
+      @detachBlock parent, row
       # make it the previous sibling
       parent = @data.getParent prev
       p_i = @data.indexOf prev
@@ -995,7 +1001,14 @@ renderLine = (lineData, options = {}) ->
     # given an anchor and cursor, figures out the right blocks to be deleting
     # returns a parent, minindex, and maxindex
     getVisualLineSelections: () ->
-      [common, ancestors1, ancestors2] = @data.getCommonAncestor @cursor.row, @anchor.row
+      common = @data.root
+      i = 1
+      while @cursor.path.length > i and @anchor.path.length > i and @cursor.path[i] == @anchor.path[i]
+        common = @cursor.path[i]
+        i += 1
+      ancestors1 = @cursor.path[i..]
+      ancestors2 = @anchor.path[i..]
+
       if ancestors1.length == 0
         # anchor is underneath cursor
         parent = @data.getParent common

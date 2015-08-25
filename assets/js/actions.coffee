@@ -65,24 +65,20 @@
       view.cursor.set @newrow, 0
 
     rewind: (view) ->
-      @rewinded = view.data.detach @newrow
+      @rewinded = view.data.detachChild @parent, @newrow
 
     reapply: (view) ->
       view.data.attachChild @parent, @newrow, @index
 
   class DetachBlock extends Action
-    constructor: (@row, @options = {}) ->
+    constructor: (@parent, @row, @options = {}) ->
 
     str: () ->
-      return "row #{@row}"
+      return "parent #{@parent} row #{@row}"
 
     apply: (view) ->
-      @parent = view.data.getParent @row
-      @index = view.data.indexOf @row
-
       if @row == view.root then throw 'Cannot delete root'
-
-      view.data.detach @row
+      @index = view.data.detachChild @parent, @row
 
     rewind: (view) ->
       view.data.attachChild @parent, @row, @index
@@ -97,7 +93,7 @@
       view.data.attachChild @parent, @row, @index
 
     rewind: (view) ->
-      view.data.detach @row
+      view.data.detachChild @parent, @row
 
   class DeleteBlocks extends Action
     constructor: (@parent, @index, @nrows = 1, @options = {}) ->
@@ -139,7 +135,7 @@
 
     reapply: (view) ->
       for row in @deleted_rows
-        view.data.detach row
+        view.data.detachChild @parent, row
       if @created != null
         view.data.attachChild @created_rewinded.parent, @created, @created_rewinded.index
 
@@ -172,7 +168,7 @@
     rewind: (view) ->
       @delete_siblings = view.data.getChildRange @parent, @index, (@index + @nrows - 1)
       for sib in @delete_siblings
-        view.data.detach sib
+        view.data.detachChild @parent, sib
 
     reapply: (view) ->
       index = @index
