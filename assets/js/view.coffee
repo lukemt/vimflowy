@@ -1,6 +1,7 @@
 # imports
 if module?
   global._ = require('lodash')
+  global.Promise = require('bluebird')
 
   global.Modes = require('./modes.coffee')
   global.mutations = require('./mutations.coffee')
@@ -199,20 +200,34 @@ window?.renderLine = renderLine
 
       @register = new Register @
 
-      if not (@data.getChildren @data.viewRoot).length
-        @data.load constants.empty_data
-      row = (@data.getChildren @data.viewRoot)[0]
-      @cursor = new Cursor @, row, 0
+      @ready = (@data.getChildren @data.viewRoot).then((children) =>
+        if not children.length
+          return @data.load constants.empty_data
+        do Promise.resolve
+      ).then(() =>
+        # load children again, now that data is loaded
+        @data.getChildren @data.viewRoot
+      ).then((children) =>
+        console.log('got children', children)
+        row = children[0]
+        console.log('making cursor', row)
+        @cursor = new Cursor @, row, 0
+        @cursor.ready
+      ).then(() =>
+        console.log('resetting history')
+        do @reset_history
+        console.log('resetting jump history')
+        do @reset_jump_history
+        console.log('setting mode')
 
-      do @reset_history
-      do @reset_jump_history
+        @setMode MODES.NORMAL
 
-      @setMode MODES.NORMAL
+        if @mainDiv?
+          @vtree = do @virtualRender
+          @vnode = virtualDom.create @vtree
+          @mainDiv.append @vnode
+      )
 
-      if @mainDiv?
-        @vtree = do @virtualRender
-        @vnode = virtualDom.create @vtree
-        @mainDiv.append @vnode
       return @
 
     exit: () ->
@@ -504,13 +519,13 @@ window?.renderLine = renderLine
       return true
 
     curLine: () ->
-      return @data.getLine @cursor.row
+      @data.getLine @cursor.row
 
     curText: () ->
-      return @data.getText @cursor.row
+      @data.getText @cursor.row
 
     curLineLength: () ->
-      return @data.getLength @cursor.row
+      @data.getLength @cursor.row
 
     reset_jump_history: () ->
       @jumpHistory = [{
@@ -1051,8 +1066,10 @@ window?.renderLine = renderLine
       crumbs = []
       row = @data.viewRoot
       until row.is @data.root
+        console.log('building crumbs', row)
         crumbs.push row
         row = do row.getParent
+      console.log('crumbs', crumbs)
 
       makeCrumb = (row, text, isLast) =>
         m_options = {}
@@ -1068,32 +1085,34 @@ window?.renderLine = renderLine
 
       crumbNodes = []
       crumbNodes.push(makeCrumb @data.root, (virtualDom.h 'icon', {className: 'fa fa-home'}))
-      for i in [crumbs.length-1..0] by -1
-        row = crumbs[i]
-        text = (@data.getText row).join('')
-        crumbNodes.push(makeCrumb row, text, i==0)
+      p = do Promise.resolve
+      (i for i in [crumbs.length-1..0] by -1).forEach (i) =>
+        p = p.then () =>
+          row = crumbs[i]
+          console.log('crumb row', row)
+          (@data.getText row).then (chars) =>
+            text = chars.join('')
+            crumbNodes.push(makeCrumb row, text, i==0)
+      p.then () =>
+        breadcrumbsNode = virtualDom.h 'div', {
+          id: 'breadcrumbs'
+        }, crumbNodes
 
-      breadcrumbsNode = virtualDom.h 'div', {
-        id: 'breadcrumbs'
-      }, crumbNodes
+        options.ignoreCollapse = true # since we're the root, even if we're collapsed, we should render
 
-      options.ignoreCollapse = true # since we're the root, even if we're collapsed, we should render
+        options.highlight_blocks = {}
+        if @lineSelect
+          # mirrors logic of finishes_visual_line in keyHandler.coffee
+          [parent, index1, index2] = do @getVisualLineSelections
+          for child in @data.getChildRange parent, index1, index2
+            options.highlight_blocks[child.id] = true
 
-      options.highlight_blocks = {}
-      if @lineSelect
-        # mirrors logic of finishes_visual_line in keyHandler.coffee
-        [parent, index1, index2] = do @getVisualLineSelections
-        for child in @data.getChildRange parent, index1, index2
-          options.highlight_blocks[child.id] = true
+        (@virtualRenderTree @data.viewRoot, options).then (contentsChildren) =>
+          contentsNode = virtualDom.h 'div', {
+            id: 'treecontents'
+          }, contentsChildren
 
-      contentsChildren = @virtualRenderTree @data.viewRoot, options
-
-      contentsNode = virtualDom.h 'div', {
-        id: 'treecontents'
-      }, contentsChildren
-
-      return virtualDom.h 'div', {
-      }, [breadcrumbsNode, contentsNode]
+          virtualDom.h 'div', {}, [breadcrumbsNode, contentsNode]
 
     virtualRenderTree: (parent, options = {}) ->
       if (not options.ignoreCollapse) and (@data.collapsed parent)
@@ -1101,7 +1120,7 @@ window?.renderLine = renderLine
 
       childrenNodes = []
 
-      for row in @data.getChildren parent
+      Promise.map (@data.getChildren parent), (row) =>
         rowElements = []
 
         if @data.isClone row.id
@@ -1155,60 +1174,57 @@ window?.renderLine = renderLine
           className: className
         }, rowElements
 
-        childrenNodes.push childNode
-      return childrenNodes
+        childNode
 
     virtualRenderLine: (row, options = {}) ->
+      (@data.getLine row).then (lineData) =>
+        cursors = {}
+        highlights = {}
 
-      lineData = @data.getLine row
-      cursors = {}
-      highlights = {}
+        if row.is @cursor.row
+          cursors[@cursor.col] = true
 
-      if row.is @cursor.row
-        cursors[@cursor.col] = true
+          if @anchor and not @lineSelect
+            if @anchor.row? and row.is @anchor.row
+              for i in [@cursor.col..@anchor.col]
+                highlights[i] = true
+            else
+              Logger.logger.warn "Multiline not yet implemented"
 
-        if @anchor and not @lineSelect
-          if @anchor.row? and row.is @anchor.row
-            for i in [@cursor.col..@anchor.col]
-              highlights[i] = true
-          else
-            Logger.logger.warn "Multiline not yet implemented"
+          cursors = @applyHook 'renderCursorsDict', cursors, { row: row }
 
-        cursors = @applyHook 'renderCursorsDict', cursors, { row: row }
+        results = []
 
-      results = []
+        lineoptions = {
+          cursors: cursors
+          highlights: highlights
+        }
 
-      lineoptions = {
-        cursors: cursors
-        highlights: highlights
-      }
-
-      if options.handle_clicks
-        if @mode == MODES.NORMAL or @mode == MODES.INSERT
-          lineoptions.charclick = (column) =>
-            @cursor.set row, column
-            # assume they might click again
+        if options.handle_clicks
+          if @mode == MODES.NORMAL or @mode == MODES.INSERT
+            lineoptions.charclick = (column) =>
+              @cursor.set row, column
+              # assume they might click again
+              @render {handle_clicks: true}
+        else if not options.no_clicks
+          lineoptions.linemouseover = () =>
             @render {handle_clicks: true}
-      else if not options.no_clicks
-        lineoptions.linemouseover = () =>
-          @render {handle_clicks: true}
 
-      lineoptions.wordHook = @applyHook.bind @, 'renderLineWordHook'
-      lineoptions.lineHook = @applyHook.bind @, 'renderLineTextOptions'
+        lineoptions.wordHook = @applyHook.bind @, 'renderLineWordHook'
+        lineoptions.lineHook = @applyHook.bind @, 'renderLineTextOptions'
 
-      lineContents = renderLine lineData, lineoptions
-      lineContents = @applyHook 'renderLineContents', lineContents, { row: row }
-      [].push.apply results, lineContents
+        lineContents = renderLine lineData, lineoptions
+        lineContents = @applyHook 'renderLineContents', lineContents, { row: row }
+        [].push.apply results, lineContents
 
-      infoChildren = @applyHook 'renderInfoElements', [], { row: row }
-      info = virtualDom.h 'div', {
-        className: 'node-info'
-      }, infoChildren
-      results.push info
+        infoChildren = @applyHook 'renderInfoElements', [], { row: row }
+        info = virtualDom.h 'div', {
+          className: 'node-info'
+        }, infoChildren
+        results.push info
 
-      results = @applyHook 'renderLineElements', results, { row: row }
-
-      return results
+        results = @applyHook 'renderLineElements', results, { row: row }
+        return results
 
   # exports
   module?.exports = View

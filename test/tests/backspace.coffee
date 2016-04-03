@@ -1,12 +1,13 @@
 TestCase = require '../testcase.coffee'
 
 describe 'backspace', () ->
-  it "works in simple case", () ->
-    t = new TestCase ['abc']
-    t.sendKey 'A'
-    t.sendKey 'backspace'
-    t.sendKey 'backspace'
-    t.expect ['a']
+  console.log('in actual describe statement')
+  it "works in simple case", (cb) ->
+    t = new TestCase ['abc'], () ->
+      t.sendKey 'A'
+      t.sendKey 'backspace'
+      t.sendKey 'backspace'
+      t.expect ['a'], cb
 
   it "works deleting from second line", () ->
     t = new TestCase ['abc', 'def']

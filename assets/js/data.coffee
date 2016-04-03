@@ -76,7 +76,8 @@ class Data extends EventEmitter
   constructor: (store) ->
     super
     @store = store
-    @viewRoot = Row.loadFromAncestry (do @store.getLastViewRoot || [])
+    @ready = (do @store.getLastViewRoot).then (result) =>
+      @viewRoot = Row.loadFromAncestry result
     return @
 
   changeViewRoot: (row) ->
@@ -95,18 +96,21 @@ class Data extends EventEmitter
   # }
   # in the case where all properties are false, it may be simply the character (to save space)
   getLine: (row) ->
-    return (@store.getLine row.id).map (obj) ->
-      if typeof obj == 'string'
-        obj = {
-          char: obj
-        }
-      return obj
+    (@store.getLine row.id).then (result) ->
+      result.map (obj) ->
+        if typeof obj == 'string'
+          obj = {
+            char: obj
+          }
+        return obj
 
   getText: (row, col) ->
-    return @getLine(row).map ((obj) -> obj.char)
+    (@getLine row).then (line) =>
+      line.map ((obj) -> obj.char)
 
   getChar: (row, col) ->
-    return @getLine(row)[col]?.char
+    (@getLine row).then (line) =>
+      line[col]?.char
 
   setLine: (row, line) ->
     return (@store.setLine row.id, (line.map (obj) ->
@@ -152,19 +156,22 @@ class Data extends EventEmitter
   #############
 
   _getChildren: (id) ->
-    return @store.getChildren id
+    @store.getChildren id
 
   _setChildren: (id, children) ->
-    return @store.setChildren id, children
+    @store.setChildren id, children
 
   _getParents: (id) ->
-    return @store.getParents id
+    @store.getParents id
 
   _setParents: (id, children_id) ->
     @store.setParents id, children_id
 
   getChildren: (parent) ->
-    (Row.loadFrom parent, serialized) for serialized in @_getChildren parent.id
+    console.log('parent', parent)
+    (@_getChildren parent.id).then (children) ->
+      console.log('children', parent.id, children)
+      Promise.resolve ((Row.loadFrom parent, serialized) for serialized in children)
 
   findChild: (row, id) ->
     _.find (@getChildren row), (x) -> x.id == id
@@ -278,25 +285,27 @@ class Data extends EventEmitter
     return info
 
   _addChild: (parent_id, id, index) ->
-    children = @_getChildren parent_id
-    errors.assert (index <= children.length)
-    if index == -1
-      children.push id
-    else
-      children.splice index, 0, id
-    @_setChildren parent_id, children
+    (Promise.all [(@_getChildren parent_id), (@_getParents id)]).then (arr) ->
+      children = arr[0]
+      parents = arr[1]
 
-    parents = @_getParents id
-    parents.push parent_id
-    @_setParents id, parents
-    info = {
-      parentId: parent_id,
-      parentIndex: parents.length - 1,
-      childId: id,
-      childIndex: index,
-    }
-    @emit "childAdded", info
-    return info
+      errors.assert (index <= children.length)
+      if index == -1
+        children.push id
+      else
+        children.splice index, 0, id
+      @_setChildren parent_id, children
+
+      parents.push parent_id
+      @_setParents id, parents
+      info = {
+        parentId: parent_id,
+        parentIndex: parents.length - 1,
+        childId: id,
+        childIndex: index,
+      }
+      @emit "childAdded", info
+      return info
 
   _detach: (id, parent_id) ->
     original_ancestry = @allAncestors id, { inclusive: true }
@@ -566,24 +575,33 @@ class Data extends EventEmitter
     return struct
 
   loadTo: (serialized, parent = @root, index = -1, id_mapping = {}, replace_empty = false) ->
+    console.log('laoding to', serialized)
     if serialized.clone
       # NOTE: this assumes we load in the same order we serialize
       errors.assert (serialized.clone of id_mapping)
       id = id_mapping[serialized.clone]
       row = new Row parent, id
-      @attachChild parent, row, index
-      return row
+      return (@attachChild parent, row, index).then(() ->
+        return Promise.resolve row
+      )
 
-    children = @getChildren parent
-    # if parent has only one child and it's empty, delete it
-    if replace_empty and children.length == 1 and ((@getLine children[0]).length == 0)
-      row = children[0]
-    else
-      row = @addChild parent, index
+    (@getChildren parent).then((children) =>
+      console.log('got children', children)
+      # if parent has only one child and it's empty, delete it
+      if replace_empty and children.length == 1
+        return (@getLine children[0]).then((line) ->
+          # if there's exactly one child and it's empty, re-use it
+          if line.length == 0
+            return Promise.resolve children[0]
+          return @addChild parent, index
+        )
+      else
+        return @addChild parent, index
+    ).then((row) =>
+      if typeof serialized == 'string'
+        @setLine row, (serialized.split '')
+        return Promise.resolve row
 
-    if typeof serialized == 'string'
-      @setLine row, (serialized.split '')
-    else
       if serialized.id
         id_mapping[serialized.id] = row.id
       line = (serialized.text.split '').map((char) -> {char: char})
@@ -596,18 +614,30 @@ class Data extends EventEmitter
       @setLine row, line
       @store.setCollapsed row.id, serialized.collapsed
 
-      if serialized.children
-        for serialized_child in serialized.children
-          @loadTo serialized_child, row, -1, id_mapping
-
-    @emit 'loadRow', row, serialized
-
-    return row
+      return Promise.each(serialized.children or [], (serialized_child) =>
+        @loadTo serialized_child, row, -1, id_mapping
+      ).then(() =>
+        Promise.resolve row
+      )
+    ).then((row) =>
+      console.log('then here')
+      @emit 'loadRow', row, serialized
+      Promise.resolve row
+    )
 
   load: (serialized_rows) ->
     id_mapping = {}
-    for serialized_row in serialized_rows
-      @loadTo serialized_row, @root, -1, id_mapping, true
+    p = do Promise.resolve
+    serialized_rows.forEach((serialized_row) =>
+      p = p.then (() =>
+        console.log('loading to', serialized_row, 'okay!')
+        @loadTo serialized_row, @root, -1, id_mapping, true
+      )
+    )
+    p.then( () =>
+      console.log('done loading', serialized_rows)
+    )
+    p
 
 # exports
 module?.exports = Data

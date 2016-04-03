@@ -8,20 +8,23 @@ Cursor represents a cursor with a view
 it handles movement logic, insert mode line properties (e.g. bold/italic)
 ###
 class Cursor extends EventEmitter
-  constructor: (view, row = null, col = null, moveCol = null) ->
+  constructor: (view, row, col, moveCol = null, properties = null) ->
     super
     @view = view
     @data = view.data
-    @row = row ? (@data.getChildren @data.viewRoot)[0]
-    @col = col ? 0
-    @properties = {}
-    do @_getPropertiesFromContext
-
+    @row = row
+    @col = col
     # -1 means last col
     @moveCol = moveCol ? col
+    if properties == null
+      @properties = {}
+      @ready = (do @_getPropertiesFromContext).then () =>
+        do Promise.resolve
+    else
+      @properties = properties
 
   clone: () ->
-    return new Cursor @view, (do @row.clone), @col, @moveCol
+    return new Cursor @view, (do @row.clone), @col, @moveCol, (_.cloneDeep @properties)
 
   _setRow: (row) ->
     @emit 'rowChange', @row, row
@@ -54,22 +57,24 @@ class Cursor extends EventEmitter
 
   setCol: (moveCol, cursorOptions = {pastEnd: true}) ->
     @moveCol = moveCol
-    @_fromMoveCol cursorOptions
-    # if moveCol was too far, fix it
-    # NOTE: this should happen for setting column, but not row
-    if @moveCol >= 0
-      @moveCol = @col
+    (@_fromMoveCol cursorOptions).then () =>
+      # if moveCol was too far, fix it
+      # NOTE: this should happen for setting column, but not row
+      if @moveCol >= 0
+        @moveCol = @col
 
   _fromMoveCol: (cursorOptions = {}) ->
-    len = @data.getLength @row
-    maxcol = len - (if cursorOptions.pastEnd then 0 else 1)
-    if @moveCol < 0
-      col = Math.max(0, len + @moveCol + 1)
-    else
-      col = Math.max(0, Math.min(maxcol, @moveCol))
-    @_setCol col
-    if not cursorOptions.keepProperties
-      do @_getPropertiesFromContext
+    (@data.getLength @row).then (len) =>
+      maxcol = len - (if cursorOptions.pastEnd then 0 else 1)
+      if @moveCol < 0
+        col = Math.max(0, len + @moveCol + 1)
+      else
+        col = Math.max(0, Math.min(maxcol, @moveCol))
+      @_setCol col
+      if not cursorOptions.keepProperties
+        return do @_getPropertiesFromContext
+      else
+        return do Promise.resolve
 
   _left: () ->
     @setCol (@col - 1)
@@ -317,15 +322,15 @@ class Cursor extends EventEmitter
   # get whether the cursor should be bold/italic based on surroundings
   # NOTE: only relevant for insert mode.
   _getPropertiesFromContext: () ->
-    line = @data.getLine @row
-    if line.length == 0
-      obj = {}
-    else if @col == 0
-      obj = line[@col]
-    else
-      obj = line[@col-1]
-    for property in constants.text_properties
-      @setProperty property, obj[property]
+    (@data.getLine @row).then (line) =>
+      if line.length == 0
+        obj = {}
+      else if @col == 0
+        obj = line[@col]
+      else
+        obj = line[@col-1]
+      for property in constants.text_properties
+        @setProperty property, obj[property]
 
 # exports
 module?.exports = Cursor

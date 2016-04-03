@@ -19,35 +19,42 @@ Settings = require '../assets/js/settings.coffee'
 Logger = require '../assets/js/logger.coffee'
 Plugins = require '../assets/js/plugins.coffee'
 
-Logger.logger.setStream Logger.STREAM.QUEUE
-afterEach 'empty the queue', () ->
-  do Logger.logger.empty
+# Logger.logger.setStream Logger.STREAM.QUEUE
+# afterEach 'empty the queue', () ->
+#   do Logger.logger.empty
 
 class TestCase
-  constructor: (serialized = ['']) ->
+  constructor: (serialized = [''], cb) ->
+    console.log 'making store'
     @store = new dataStore.InMemory
     @data = new Data @store
+    @data.ready.then () =>
+      @settings =  new Settings @store
 
-    @settings =  new Settings @store
+      # will have default bindings
+      keyBindings = new KeyBindings (do KeyDefinitions.clone), @settings
 
-    # will have default bindings
-    keyBindings = new KeyBindings (do KeyDefinitions.clone), @settings
+      console.log 'here in test case 2'
+      @view = new View @data, {bindings: keyBindings}
+      console.log 'here in test case 3'
+      @view.render = -> return
 
-    @view = new View @data, {bindings: keyBindings}
-    @view.render = -> return
+      @keyhandler = new KeyHandler @view, keyBindings
+      @register = @view.register
 
-    @keyhandler = new KeyHandler @view, keyBindings
-    @register = @view.register
+      Plugins.resolveView @view
+      for name of Plugins.plugins
+        Plugins.enable name
+      console.log 'here in test case 4'
 
-    Plugins.resolveView @view
-    for name of Plugins.plugins
-      Plugins.enable name
-
-    # NOTE: this is *after* resolveView because of plugins with state
-    # e.g. marks needs the database to have the marks loaded
-    @data.load serialized
-    do @view.reset_history
-    do @view.reset_jump_history
+      # NOTE: this is *after* resolveView because of plugins with state
+      # e.g. marks needs the database to have the marks loaded
+      console.log 'about to load serialized'
+      @data.load serialized
+      console.log 'load ed serialized'
+      do @view.reset_history
+      do @view.reset_jump_history
+      do cb
 
   _expectDeepEqual: (actual, expected, message) ->
     if not _.isEqual actual, expected
@@ -83,10 +90,12 @@ class TestCase
   import: (content, mimetype) ->
     @view.importContent content, mimetype
 
-  expect: (expected) ->
-    serialized = @data.serialize @data.root, {pretty: true}
-    @_expectDeepEqual serialized.children, expected, "Unexpected serialized content"
-    return @
+  expect: (expected, cb) ->
+    @keyhandler.on 'drain', () =>
+      console.lo('drained!')
+      serialized = @data.serialize @data.root, {pretty: true}
+      @_expectDeepEqual serialized.children, expected, "Unexpected serialized content"
+      do cb
 
   expectViewRoot: (expected) ->
     @_expectEqual @data.viewRoot.id, expected, "Unexpected view root"

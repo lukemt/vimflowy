@@ -7,7 +7,9 @@ if module?
 DataStore abstracts the data layer, so that it can be swapped out.
 There are many methods the each type of DataStore should implement to satisfy the API.
 However, in the case of a key-value store, one can simply implement `get` and `set` methods.
-Currently, DataStore has a synchronous API.  This may need to change eventually...  :(
+NOTE: it is assumed that all gets can be asynchronous, but that
+sets then allow immediate retrieval!  Thus it is required that you maintain an
+in-memory cache
 ###
 ((exports) ->
   class DataStore
@@ -42,7 +44,8 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
 
     # get and set values for a given row
     getLine: (row) ->
-      _.cloneDeep (@get (@_lineKey_ row), [])
+      (@get (@_lineKey_ row), []).then (val) =>
+        Promise.resolve _.cloneDeep val
     setLine: (row, line) ->
       @set (@_lineKey_ row), line
 
@@ -55,7 +58,8 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
       @set (@_parentKey_ row), parents
 
     getChildren: (row) ->
-      _.cloneDeep (@get (@_childrenKey_ row), [])
+      (@get (@_childrenKey_ row), []).then (val) =>
+        Promise.resolve _.cloneDeep val
     setChildren: (row, children) ->
       @set (@_childrenKey_ row), children
 
@@ -82,6 +86,7 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
     setLastViewRoot: (ancestry) ->
       @set @_lastViewrootKey_, ancestry
     getLastViewRoot: () ->
+      console.log('getting last view root')
       @get @_lastViewrootKey_, []
 
     setSchemaVersion: (version) ->
@@ -96,20 +101,18 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
     setPluginData: (plugin, key, data) ->
       @set (@_pluginDataKey_ plugin, key), data
     getPluginData: (plugin, key, default_value=null) ->
-      _.cloneDeep (@get (@_pluginDataKey_ plugin, key), default_value)
+      (@get (@_pluginDataKey_ plugin, key), default_value).then (val) =>
+        Promise.resolve _.cloneDeep val
 
     # get next row ID
     getId: () -> # Suggest to override this for efficiency
-      id = 1
-      while (@get (@_lineKey_ id), null) != null
-        id++
-      id
+      throw new errors.NotImplemented
 
     getNew: () ->
-      id = do @getId
-      @setLine id, []
-      @setChildren id, []
-      return id
+      (do @getId).then (id) ->
+        @setLine id, []
+        @setChildren id, []
+        Promise.resolve id
 
     validateSchemaVersion: () ->
       storedVersion = do @getSchemaVersion
@@ -129,13 +132,19 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
       super ''
 
     get: (key, default_value = null) ->
+      val = default_value
       if key of @cache
-        @cache[key]
-      else
-        default_value
+        val = @cache[key]
+      Promise.resolve val
 
     set: (key, value) ->
       @cache[key] = value
+      do Promise.resolve
+
+    getId: () ->
+      (@get @_IDKey_, 1).then (id) =>
+        @set @_IDKey_, (id + 1)
+        Promise.resolve id
 
   class LocalStorageLazy extends DataStore
     constructor: (prefix='') ->
@@ -146,11 +155,12 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
     get: (key, default_value=null) ->
       if not (key of @cache)
         @cache[key] = @_getLocalStorage_ key, default_value
-      return @cache[key]
+      Promise.resolve @cache[key]
 
     set: (key, value) ->
       @cache[key] = value
       @_setLocalStorage_ key, value
+      do Promise.resolve
 
     _setLocalStorage_: (key, value, options={}) ->
       if (do @getLastSave) > @lastSave
@@ -190,11 +200,9 @@ Currently, DataStore has a synchronous API.  This may need to change eventually.
       @_setLocalStorage_ @_schemaVersionKey_, version, { doesNotAffectLastSave: true }
 
     getId: () ->
-      id = @_getLocalStorage_ @_IDKey_, 1
-      while (@_getLocalStorage_ (@_lineKey_ id), null) != null
-        id++
-      @_setLocalStorage_ @_IDKey_, (id + 1)
-      return id
+      (@_getLocalStorage_ @_IDKey_, 1).then (id) =>
+        @_setLocalStorage_ @_IDKey_, (id + 1)
+        Promise.resolve id
 
   exports.InMemory = InMemory
   exports.LocalStorageLazy = LocalStorageLazy

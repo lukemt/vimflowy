@@ -23,6 +23,8 @@ if module?
 
   global.Logger = require('./logger.coffee')
 
+  global.async = require('async')
+
 (() ->
   MODES = Modes.modes
 
@@ -85,9 +87,10 @@ if module?
       @index = @index - n
       return dropped
 
-  class KeyHandler
+  class KeyHandler extends EventEmitter
 
     constructor: (view, keyBindings) ->
+      super
       @view = view
 
       @keyBindings = keyBindings
@@ -135,17 +138,33 @@ if module?
       @keyStream.enqueue key
       if @recording.stream
         @recording.stream.enqueue key
-      handled = @processKeys @keyStream
-      return handled
+      console.lo('handle key called', handled)
+      (@processKeys @keyStream).then (handled) ->
+        console.lo('processed keys', handled)
+        if do @keyStream.empty
+          console.lo('emitting drained!')
+          @emit 'drain'
+        Promise.resolve handled
 
     # NOTE: handled tells the eventEmitter whether to preventDefault or not
     processKeys: (keyStream) ->
-      handled = false
-      while not keyStream.done() and not keyStream.waiting
-        do keyStream.checkpoint
-        handled = (@processOnce keyStream) or handled
-      do @view.render
-      return handled
+      new Promise (resolve, reject) ->
+        handled = false
+        async.whilst \
+          (() ->
+            not keyStream.done() and not keystream.waiting
+          ),
+          ((cb) =>
+            do keyStream.checkpoint
+            (@processOnce keyStream).then (onceHandled) ->
+              handled = onceHandled or handled
+              do cb
+          ),
+          ((err) =>
+            if (err) then reject err
+            do @view.render
+            resolve handled
+          )
 
     processOnce: (keyStream) ->
       @processMode @view.mode, keyStream
@@ -171,21 +190,21 @@ if module?
       [key, context] = mode_obj.transform_key key, context
       if key == null
         if keyStream.waiting # continuing
-          return true
-        return false
+          return Promise.resolve true
+        return Promise.resolve false
 
       if (key of bindings)
         info = bindings[key]
       else
         if not ('MOTION' of bindings)
-          return mode_obj.handle_bad_key key, keyStream
+          return Promise.resolve mode_obj.handle_bad_key key, keyStream
 
         # note: this uses original bindings to determine what's a motion
         [motion, context.repeat] = @getMotion keyStream, key, @keyBindings.motion_bindings[mode], context.repeat
         if motion == null
           if keyStream.waiting # motion continuing
-            return true
-          return mode_obj.handle_bad_key key, keyStream
+            return Promise.resolve true
+          return Promise.resolve mode_obj.handle_bad_key key, keyStream
 
         args.push motion
         info = bindings['MOTION']
@@ -198,7 +217,7 @@ if module?
         context = mode_obj.transform_context context
         info.definition.apply context, args
         (Modes.getMode @view.mode).every @view, keyStream
-        return true
+        return Promise.resolve true
       else
         throw new errors.UnexpectedValue "definition", definition
 

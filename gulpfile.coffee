@@ -120,8 +120,12 @@ gulp.task 'vendor', ->
     .pipe gulp.dest "#{out_folder}/"
   gulp.src 'node_modules/lodash/lodash.js'
     .pipe gulp.dest "#{out_folder}/"
+  gulp.src 'node_modules/async/dist/async.js'
+    .pipe gulp.dest "#{out_folder}/"
+  gulp.src 'node_modules/bluebird/js/browser/bluebird.min.js'
+    .pipe rename "bluebird.js"
+    .pipe gulp.dest "#{out_folder}/"
   gulp.src 'node_modules/tv4/tv4.js'
-    .pipe rename "tv4.js"
     .pipe gulp.dest "#{out_folder}/"
 
 gulp.task 'plugins', [
