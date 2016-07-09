@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "async": "latest",
+    "bluebird": "latest",
     "express": "latest",
     "lodash": "latest",
     "tv4": "latest"
